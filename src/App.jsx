@@ -205,6 +205,14 @@ export default function App(){
   const [confirm,setConfirm]=useState(null);
   const [portalMid,setPortalMid]=useState(null);
   const [portalStep,setPortalStep]=useState(null); // null | "pin" | "pick"
+  const [sidebarOpen,setSidebarOpen]=useState(false);
+  const [isMobile,setIsMobile]=useState(typeof window!=="undefined"&&window.innerWidth<1024);
+
+  useEffect(()=>{
+    const onResize=()=>setIsMobile(window.innerWidth<1024);
+    window.addEventListener("resize",onResize);
+    return()=>window.removeEventListener("resize",onResize);
+  },[]);
   const [portalOk,setPortalOk]=useState(false);
   const [portalErr,setPortalErr]=useState("");
 
@@ -353,38 +361,72 @@ export default function App(){
   ];
 
   return(
-    <div style={{display:"flex",minHeight:"100vh",background:G.bg,fontFamily:"'DM Sans','Helvetica Neue',sans-serif",color:G.text}}>
-      {/* SIDEBAR */}
-      <aside style={{width:232,background:G.surface,borderRight:`1px solid ${G.border}`,display:"flex",flexDirection:"column",position:"sticky",top:0,height:"100vh",overflowY:"auto",flexShrink:0,boxShadow:"2px 0 12px rgba(30,50,25,.04)"}}>
-        <div style={{padding:"22px 20px 18px"}}>
-          <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:4}}>
-            <div style={{width:36,height:36,borderRadius:10,background:G.primary,display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:800,color:"white",fontFamily:"'Georgia',serif",letterSpacing:.8}}>KSG</div>
-            <div><div style={{fontWeight:800,fontSize:15,color:G.text,letterSpacing:-.3}}>Khobidi Savings Group</div><div style={{fontSize:10,color:G.textSoft}}>Season {SEASON_START}</div></div>
+    <div style={{minHeight:"100vh",background:G.bg,fontFamily:"'DM Sans','Helvetica Neue',sans-serif",color:G.text,display:"flex",flexDirection:isMobile?"column":"row"}}>
+
+      {/* MOBILE TOP BAR */}
+      {isMobile&&(
+        <header style={{position:"sticky",top:0,zIndex:50,background:G.surface,borderBottom:`1px solid ${G.border}`,padding:"10px 14px",display:"flex",alignItems:"center",gap:10,boxShadow:"0 2px 8px rgba(30,50,25,.04)"}}>
+          <button aria-label="Menu" onClick={()=>setSidebarOpen(true)} style={{width:38,height:38,borderRadius:10,border:`1px solid ${G.border}`,background:G.bg,color:G.text,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,padding:0,fontFamily:"inherit"}}>☰</button>
+          <div style={{width:32,height:32,borderRadius:9,background:G.primary,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,fontWeight:800,color:"white",fontFamily:"'Georgia',serif",letterSpacing:.7}}>KSG</div>
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{fontWeight:800,fontSize:13,color:G.text,letterSpacing:-.2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>Khobidi Savings Group</div>
+            <div style={{fontSize:10,color:G.textSoft}}>{admin} · Week {week}</div>
           </div>
+        </header>
+      )}
+
+      {/* MOBILE OVERLAY (when sidebar open) */}
+      {isMobile&&sidebarOpen&&(
+        <div onClick={()=>setSidebarOpen(false)} style={{position:"fixed",inset:0,background:"rgba(15,30,18,.55)",backdropFilter:"blur(4px)",zIndex:90,animation:"fadeIn .2s"}}/>
+      )}
+
+      {/* SIDEBAR */}
+      {(!isMobile||sidebarOpen)&&<aside style={{
+        width:isMobile?280:232,
+        background:G.surface,
+        borderRight:`1px solid ${G.border}`,
+        display:"flex",flexDirection:"column",
+        ...(isMobile?{
+          position:"fixed",top:0,left:0,
+          height:"100vh",zIndex:100,
+          boxShadow:"4px 0 32px rgba(0,0,0,.25)",
+          animation:"slideIn .22s ease",
+        }:{
+          position:"sticky",top:0,height:"100vh",flexShrink:0,
+          boxShadow:"2px 0 12px rgba(30,50,25,.04)",
+        }),
+        overflowY:"auto",
+      }}>
+        <div style={{padding:"22px 20px 14px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+          <div style={{display:"flex",alignItems:"center",gap:10}}>
+            <div style={{width:36,height:36,borderRadius:10,background:G.primary,display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:800,color:"white",fontFamily:"'Georgia',serif",letterSpacing:.8}}>KSG</div>
+            <div><div style={{fontWeight:800,fontSize:14,color:G.text,letterSpacing:-.3}}>Khobidi Savings</div><div style={{fontSize:10,color:G.textSoft}}>Season {SEASON_START}</div></div>
+          </div>
+          {isMobile&&<button onClick={()=>setSidebarOpen(false)} style={{width:30,height:30,borderRadius:8,border:"none",background:G.bg,color:G.textMid,cursor:"pointer",fontSize:16,fontFamily:"inherit"}}>✕</button>}
         </div>
         <div style={{margin:"0 12px 12px",padding:"10px 12px",background:G.primaryL,borderRadius:12,display:"flex",alignItems:"center",gap:8}}>
-          <div style={{width:28,height:28,borderRadius:8,background:G.primary,display:"flex",alignItems:"center",justifyContent:"center",fontSize:13}}>👤</div>
+          <div style={{width:28,height:28,borderRadius:8,background:G.primary,display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,color:"white"}}>👤</div>
           <div><div style={{fontSize:12,fontWeight:700,color:G.primary}}>{admin}</div><div style={{fontSize:10,color:G.accent}}>Administrator</div></div>
         </div>
         <nav style={{flex:1,padding:"4px 12px",display:"flex",flexDirection:"column",gap:2}}>
-          {NAV.map(n=><NavItem key={n.v} icon={n.icon} label={n.label} active={view===n.v} onClick={()=>{setView(n.v);if(n.v!=="members")setSelMid(null);}} badge={n.v==="weekly"?pendingWeek:n.v==="loans"?overdueMembers.length:0}/>)}
+          {NAV.map(n=><NavItem key={n.v} icon={n.icon} label={n.label} active={view===n.v} onClick={()=>{setView(n.v);if(n.v!=="members")setSelMid(null);if(isMobile)setSidebarOpen(false);}} badge={n.v==="weekly"?pendingWeek:n.v==="loans"?overdueMembers.length:0}/>)}
         </nav>
         <div style={{padding:"12px 16px",borderTop:`1px solid ${G.border}`}}>
           <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
             <span style={{fontSize:11,color:G.textSoft,fontWeight:600}}>CURRENT WEEK</span>
             <div style={{display:"flex",alignItems:"center",gap:6,marginLeft:"auto"}}>
-              <button style={{width:22,height:22,borderRadius:6,border:`1px solid ${G.border}`,background:G.bg,cursor:"pointer",fontSize:13,color:G.textMid,display:"flex",alignItems:"center",justifyContent:"center"}} onClick={()=>setWeek(w=>Math.max(1,w-1))}>−</button>
+              <button style={{width:24,height:24,borderRadius:6,border:`1px solid ${G.border}`,background:G.bg,cursor:"pointer",fontSize:14,color:G.textMid,display:"flex",alignItems:"center",justifyContent:"center",fontFamily:"inherit"}} onClick={()=>setWeek(w=>Math.max(1,w-1))}>−</button>
               <span style={{fontWeight:800,fontSize:16,color:G.primary,minWidth:24,textAlign:"center"}}>{week}</span>
-              <button style={{width:22,height:22,borderRadius:6,border:`1px solid ${G.border}`,background:G.bg,cursor:"pointer",fontSize:13,color:G.textMid,display:"flex",alignItems:"center",justifyContent:"center"}} onClick={()=>setWeek(w=>Math.min(52,w+1))}>+</button>
+              <button style={{width:24,height:24,borderRadius:6,border:`1px solid ${G.border}`,background:G.bg,cursor:"pointer",fontSize:14,color:G.textMid,display:"flex",alignItems:"center",justifyContent:"center",fontFamily:"inherit"}} onClick={()=>setWeek(w=>Math.min(52,w+1))}>+</button>
             </div>
           </div>
           <div style={{fontSize:10,color:G.textSoft,marginBottom:10}}>{fds(SUNDAYS[week-1]?.date)}</div>
-          <button style={{width:"100%",padding:"8px",borderRadius:9,border:`1px solid ${G.border}`,background:G.bg,color:G.textMid,cursor:"pointer",fontSize:12,fontWeight:600,fontFamily:"inherit"}} onClick={()=>setAdmin(null)}>Sign Out</button>
+          <button style={{width:"100%",padding:"9px",borderRadius:9,border:`1px solid ${G.border}`,background:G.bg,color:G.textMid,cursor:"pointer",fontSize:12,fontWeight:600,fontFamily:"inherit"}} onClick={()=>setAdmin(null)}>Sign Out</button>
         </div>
-      </aside>
+      </aside>}
 
       {/* MAIN */}
-      <main style={{flex:1,overflowY:"auto",padding:"32px 36px",minWidth:0}}>
+      <main style={{flex:1,overflowY:"auto",padding:isMobile?"18px 16px 100px":"32px 36px",minWidth:0,width:"100%"}}>
         {toast&&<Toast msg={toast.msg} type={toast.type}/>}
         {confirm&&<ConfirmDialog {...confirm} onCancel={closeConfirm}/>}
 
@@ -402,6 +444,27 @@ export default function App(){
         {view==="cashflow"&&<CashflowView members={members} week={week}/>}
         {view==="audit"&&<AuditView auditLog={auditLog} members={members}/>}
       </main>
+
+      {/* MOBILE BOTTOM NAV BAR */}
+      {isMobile&&(
+        <nav style={{position:"fixed",bottom:0,left:0,right:0,background:G.surface,borderTop:`1px solid ${G.border}`,boxShadow:"0 -4px 16px rgba(15,30,18,.06)",display:"flex",zIndex:80,paddingBottom:"env(safe-area-inset-bottom)"}}>
+          {[
+            {v:"dashboard",icon:"🏠",label:"Home"},
+            {v:"members",icon:"👥",label:"Members"},
+            {v:"weekly",icon:"💵",label:"Pay"},
+            {v:"loans",icon:"💳",label:"Loans"},
+            {v:"__more",icon:"☰",label:"More"},
+          ].map(t=>{
+            const isActive=t.v==="__more"?false:view===t.v;
+            return(
+              <button key={t.v} onClick={()=>{if(t.v==="__more"){setSidebarOpen(true);}else{setView(t.v);setSelMid(null);}}} style={{flex:1,background:"none",border:"none",padding:"10px 4px 8px",cursor:"pointer",display:"flex",flexDirection:"column",alignItems:"center",gap:3,color:isActive?G.primary:G.textSoft,fontFamily:"inherit"}}>
+                <span style={{fontSize:20,filter:isActive?"none":"grayscale(.5)",opacity:isActive?1:.7}}>{t.icon}</span>
+                <span style={{fontSize:10,fontWeight:isActive?700:500}}>{t.label}</span>
+              </button>
+            );
+          })}
+        </nav>
+      )}
     </div>
   );
 }
