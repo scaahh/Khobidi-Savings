@@ -4,6 +4,7 @@ import { LineChart, Line, BarChart, Bar, XAxis, YAxis, Tooltip,
   ResponsiveContainer, CartesianGrid, Legend, PieChart, Pie, Cell, AreaChart, Area } from "recharts";
 import { initializeApp } from "firebase/app";
 import { getFirestore, doc, onSnapshot, setDoc } from "firebase/firestore";
+import { getAuth, signInAnonymously, onAuthStateChanged } from "firebase/auth";
 
 /* ─── FIREBASE INIT */
 const firebaseConfig = {
@@ -16,7 +17,12 @@ const firebaseConfig = {
 };
 const firebaseApp = initializeApp(firebaseConfig);
 const db = getFirestore(firebaseApp);
+const auth = getAuth(firebaseApp);
 const DB_DOC = doc(db, "groups", "khobidi");
+
+/* Group secret code — required to unlock the app on each new device */
+const GROUP_CODE = "ZaNdalamal";
+const UNLOCK_KEY = "khobidi_device_unlocked";
 
 /* ─────────────────────────────────── DESIGN TOKENS */
 const G = {
@@ -295,6 +301,10 @@ export default function App(){
   const [isMobile,setIsMobile]=useState(typeof window!=="undefined"&&window.innerWidth<1024);
   const [syncStatus,setSyncStatus]=useState("connecting"); // connecting | synced | offline
   const [hydrated,setHydrated]=useState(false); // wait for first Firestore snapshot before saving back
+  const [unlocked,setUnlocked]=useState(typeof window!=="undefined"&&localStorage.getItem(UNLOCK_KEY)==="yes");
+  const [codeInput,setCodeInput]=useState("");
+  const [codeErr,setCodeErr]=useState("");
+  const [authReady,setAuthReady]=useState(false);
 
   useEffect(()=>{
     const onResize=()=>setIsMobile(window.innerWidth<1024);
@@ -304,8 +314,25 @@ export default function App(){
   const [portalOk,setPortalOk]=useState(false);
   const [portalErr,setPortalErr]=useState("");
 
-  /* Firestore real-time listener */
+  /* Auth listener — track Firebase auth state */
   useEffect(()=>{
+    const unsub=onAuthStateChanged(auth,(user)=>{
+      setAuthReady(!!user);
+      // If device was previously unlocked but signed out (token expired etc), re-sign in silently
+      if(!user&&localStorage.getItem(UNLOCK_KEY)==="yes"){
+        signInAnonymously(auth).catch(e=>{
+          console.error("Silent re-auth failed:",e);
+          localStorage.removeItem(UNLOCK_KEY);
+          setUnlocked(false);
+        });
+      }
+    });
+    return()=>unsub();
+  },[]);
+
+  /* Firestore real-time listener — only after auth is ready */
+  useEffect(()=>{
+    if(!authReady)return;
     const unsub=onSnapshot(DB_DOC,(snap)=>{
       if(snap.exists()){
         const d=snap.data();
@@ -325,7 +352,7 @@ export default function App(){
       setHydrated(true);
     });
     return()=>unsub();
-  },[]);
+  },[authReady]);
 
   /* Save changes to cloud (and cache locally) — only after first hydration */
   useEffect(()=>{
@@ -370,6 +397,56 @@ export default function App(){
   const pendingWeek=members.filter(m=>!m.weeklyContributions[week]?.paid).length;
   const idleCapital=Math.max(0,totalContribs-totalLoansOut);
   const selMember=members.find(m=>m.id===selMid);
+
+  function tryUnlock(){
+    if(codeInput.trim()===GROUP_CODE){
+      signInAnonymously(auth)
+        .then(()=>{
+          localStorage.setItem(UNLOCK_KEY,"yes");
+          setUnlocked(true);
+          setCodeErr("");
+          setCodeInput("");
+        })
+        .catch(e=>{
+          console.error("Anon sign-in failed:",e);
+          setCodeErr("Sign-in failed. Check your internet connection.");
+        });
+    }else{
+      setCodeErr("Incorrect group code. Please try again.");
+    }
+  }
+
+  /* GATE — group secret code required before any access */
+  if(!unlocked){
+    return(
+      <div style={LS.wrap}>
+        <div style={LS.topStrip}>
+          <div style={LS.stripBlob1}/>
+          <div style={LS.stripBlob2}/>
+          <div style={LS.topBar}>
+            <div style={LS.logoMini}>KSG</div>
+            <div style={LS.topBarText}>
+              <div style={LS.topBarTitle}>Khobidi Savings Group</div>
+              <div style={LS.topBarSeason}>Season {SEASON_START} · Locked</div>
+            </div>
+          </div>
+        </div>
+        <div style={LS.floatCard}>
+          <div style={{width:64,height:64,borderRadius:18,background:`linear-gradient(135deg,${G.primary} 0%,${G.primaryD} 100%)`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:28,color:"white",margin:"0 auto 14px",boxShadow:`0 8px 24px rgba(61,107,79,.35)`}}>🔒</div>
+          <h2 style={LS.welcome}>Group Access Required</h2>
+          <p style={LS.welcomeSub}>Enter the group code to unlock this device. You only need to do this once.</p>
+          <label style={LS.label}>Group Code</label>
+          <input type="password" placeholder="Enter group code" value={codeInput}
+            style={{...LS.input,...(codeErr?{borderColor:G.red,background:"#FEF7F7"}:{}),fontSize:16,letterSpacing:2,textAlign:"center"}}
+            onChange={e=>{setCodeInput(e.target.value);setCodeErr("");}}
+            onKeyDown={e=>{if(e.key==="Enter")tryUnlock();}} autoFocus/>
+          {codeErr&&<div style={LS.errBox}>⚠️ {codeErr}</div>}
+          <button style={LS.btn} onClick={tryUnlock}>Unlock Device →</button>
+          <p style={LS.helpText}>Don't have the code? Contact one of the group admins.</p>
+        </div>
+      </div>
+    );
+  }
 
   /* portal flow: pin → pick member → dashboard */
   if(!admin&&portalStep==="pin"){
@@ -560,6 +637,7 @@ export default function App(){
           </div>
           <div style={{fontSize:10,color:G.textSoft,marginBottom:10}}>{fds(SUNDAYS[week-1]?.date)}</div>
           <button style={{width:"100%",padding:"9px",borderRadius:9,border:`1px solid ${G.border}`,background:G.bg,color:G.textMid,cursor:"pointer",fontSize:12,fontWeight:600,fontFamily:"inherit"}} onClick={()=>setAdmin(null)}>Sign Out</button>
+          <button style={{width:"100%",padding:"7px",borderRadius:9,border:`1px solid #FCA5A5`,background:"#FEF2F2",color:G.red,cursor:"pointer",fontSize:11,fontWeight:600,fontFamily:"inherit",marginTop:6}} onClick={()=>{if(confirm("Lock this device? You'll need to enter the group code again.")){localStorage.removeItem(UNLOCK_KEY);auth.signOut().finally(()=>{setUnlocked(false);setAdmin(null);});}}}>🔒 Lock Device</button>
         </div>
       </aside>}
 
