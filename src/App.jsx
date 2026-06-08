@@ -2,6 +2,21 @@ import { useState, useEffect, useCallback } from "react";
 import * as XLSX from "xlsx";
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, Tooltip,
   ResponsiveContainer, CartesianGrid, Legend, PieChart, Pie, Cell, AreaChart, Area } from "recharts";
+import { initializeApp } from "firebase/app";
+import { getFirestore, doc, onSnapshot, setDoc } from "firebase/firestore";
+
+/* ─── FIREBASE INIT */
+const firebaseConfig = {
+  apiKey: "AIzaSyC_9CG6Vj7SN-IqwdkpNjsMA1v1jvr-s1M",
+  authDomain: "khobidi-savings-group.firebaseapp.com",
+  projectId: "khobidi-savings-group",
+  storageBucket: "khobidi-savings-group.firebasestorage.app",
+  messagingSenderId: "792713867803",
+  appId: "1:792713867803:web:89d6e8cfac1ed6ca18bebe",
+};
+const firebaseApp = initializeApp(firebaseConfig);
+const db = getFirestore(firebaseApp);
+const DB_DOC = doc(db, "groups", "khobidi");
 
 /* ─────────────────────────────────── DESIGN TOKENS */
 const G = {
@@ -79,9 +94,80 @@ const INIT_MEMBERS=["Angella","Fatima","Sandra","Netty","Member E","Member F","M
 function fmt(n){return "€"+Number(n).toFixed(2);}
 function fd(d){return d?new Date(d).toLocaleDateString("en-GB"):"—";}
 function fds(d){return d?new Date(d).toLocaleDateString("en-GB",{day:"numeric",month:"short"}):"—";}
+/* localStorage cache for instant load while Firestore syncs */
 function load(){try{const r=localStorage.getItem(STORE_KEY);if(r)return JSON.parse(r);}catch{}return null;}
-function save(d){try{localStorage.setItem(STORE_KEY,JSON.stringify(d));}catch{}}
+function saveLocal(d){try{localStorage.setItem(STORE_KEY,JSON.stringify(d));}catch{}}
+/* push current state to Firestore (debounced) */
+let saveTimer=null;
+function saveCloud(data){
+  if(saveTimer)clearTimeout(saveTimer);
+  saveTimer=setTimeout(async()=>{
+    try{await setDoc(DB_DOC,{...data,updatedAt:new Date().toISOString()});}
+    catch(e){console.error("Cloud save failed:",e);}
+  },400);
+}
 function mkLog(admin,action,detail,memberId){return{id:Date.now()+Math.random(),ts:new Date().toISOString(),admin,action,detail,memberId};}
+
+/* Comprehensive weekly backup — exports full snapshot to Excel */
+function generateWeeklyBackup(members,auditLog){
+  try{
+    const wb=XLSX.utils.book_new();
+    // Sheet 1: Members
+    XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(members.map(m=>({
+      ID:m.id,Name:m.name,Email:m.email,
+      "Membership Fee Paid":m.membershipFeePaid?"Yes":"No",
+      "Refundable Fee Paid":m.refundablePaid?"Yes":"No",
+      "Weeks Paid":Object.values(m.weeklyContributions).filter(c=>c.paid).length,
+      "Total Contributions (€)":Object.values(m.weeklyContributions).reduce((s,c)=>s+(c.paid?c.amount:0),0).toFixed(2),
+      "Loans Issued":m.loans.length,
+      "Active Loans":m.loans.filter(l=>l.active).length,
+      "Loan Balance (€)":m.loans.reduce((s,l)=>s+loanBalance(l),0).toFixed(2),
+      "Penalties":m.penalties.length,
+      "Total Penalties (€)":m.penalties.reduce((s,p)=>s+p.amount,0).toFixed(2),
+      "Credit Score":creditScore(m),
+      "Tier":getTier(creditScore(m)).label,
+    }))),"Members Summary");
+    // Sheet 2: Weekly contributions matrix
+    XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(members.map(m=>{
+      const row={Name:m.name};
+      for(let w=1;w<=52;w++){const c=m.weeklyContributions[w];row[`Wk${w}`]=c?.paid?c.amount:0;}
+      return row;
+    })),"Weekly Contributions");
+    // Sheet 3: Loans
+    XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(members.flatMap(m=>m.loans.map((l,i)=>({
+      Member:m.name,"Loan #":i+1,Amount:l.amount,
+      "Interest Rate":Math.round((l.rate||0.20)*100)+"%",
+      "Total Repayable":l.total.toFixed(2),
+      "Issued":fd(l.issuedDate),"Due":fd(loanDueDate(l)),
+      "Balance":loanBalance(l).toFixed(2),
+      "Status":l.active?"Active":"Cleared",
+      "Repayments":(l.repayments||[]).map(r=>`${fd(r.date)}: €${r.amount}`).join(" | "),
+    })))),"Loans");
+    // Sheet 4: Penalties
+    XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(members.flatMap(m=>m.penalties.map(p=>({
+      Date:fd(p.date),Member:m.name,Reason:p.reason,Amount:p.amount
+    })))),"Penalties Log");
+    // Sheet 5: Audit Log
+    XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(auditLog.slice(0,1000).map(a=>({
+      Timestamp:fd(a.ts)+" "+new Date(a.ts).toLocaleTimeString("en-GB"),
+      Admin:a.admin,Action:a.action,Detail:a.detail,
+      Member:a.memberId?members.find(m=>m.id===a.memberId)?.name||"":"",
+    }))),"Audit Log");
+    const dateStr=new Date().toISOString().split("T")[0];
+    XLSX.writeFile(wb,`KhobidiBackup_${dateStr}.xlsx`);
+    return true;
+  }catch(e){console.error("Backup failed:",e);return false;}
+}
+
+/* Returns ISO week key like "2026-W23" for a given date */
+function weekKey(d){
+  const date=new Date(d);
+  date.setHours(0,0,0,0);
+  date.setDate(date.getDate()+4-(date.getDay()||7));
+  const yearStart=new Date(date.getFullYear(),0,1);
+  const weekNo=Math.ceil((((date-yearStart)/86400000)+1)/7);
+  return `${date.getFullYear()}-W${weekNo}`;
+}
 
 /* ─────────────────────────────────── CONFIRM DIALOG */
 function ConfirmDialog({msg,sub,onConfirm,onCancel,confirmLabel="Confirm",danger=false}){
@@ -207,6 +293,8 @@ export default function App(){
   const [portalStep,setPortalStep]=useState(null); // null | "pin" | "pick"
   const [sidebarOpen,setSidebarOpen]=useState(false);
   const [isMobile,setIsMobile]=useState(typeof window!=="undefined"&&window.innerWidth<1024);
+  const [syncStatus,setSyncStatus]=useState("connecting"); // connecting | synced | offline
+  const [hydrated,setHydrated]=useState(false); // wait for first Firestore snapshot before saving back
 
   useEffect(()=>{
     const onResize=()=>setIsMobile(window.innerWidth<1024);
@@ -216,7 +304,54 @@ export default function App(){
   const [portalOk,setPortalOk]=useState(false);
   const [portalErr,setPortalErr]=useState("");
 
-  useEffect(()=>save({members,auditLog,notes}),[members,auditLog,notes]);
+  /* Firestore real-time listener */
+  useEffect(()=>{
+    const unsub=onSnapshot(DB_DOC,(snap)=>{
+      if(snap.exists()){
+        const d=snap.data();
+        if(d.members)setMembers(d.members);
+        if(d.auditLog)setAuditLog(d.auditLog);
+        if(d.notes)setNotes(d.notes);
+        setSyncStatus("synced");
+      }else{
+        // First time — push initial seed to Firestore
+        setDoc(DB_DOC,{members:INIT_MEMBERS,auditLog:[],notes:[],updatedAt:new Date().toISOString()}).catch(()=>{});
+        setSyncStatus("synced");
+      }
+      setHydrated(true);
+    },(err)=>{
+      console.error("Firestore listener error:",err);
+      setSyncStatus("offline");
+      setHydrated(true);
+    });
+    return()=>unsub();
+  },[]);
+
+  /* Save changes to cloud (and cache locally) — only after first hydration */
+  useEffect(()=>{
+    if(!hydrated)return;
+    const data={members,auditLog,notes};
+    saveLocal(data);
+    saveCloud(data);
+  },[members,auditLog,notes,hydrated]);
+
+  /* Auto weekly backup — fires on Monday from 4am onwards, once per ISO week */
+  useEffect(()=>{
+    if(!hydrated||!admin)return;
+    const now=new Date();
+    const isMonday=now.getDay()===1;
+    const after4am=now.getHours()>=4;
+    if(!isMonday||!after4am)return;
+    const thisWeekKey=weekKey(now);
+    const lastBackup=localStorage.getItem("khobidi_last_backup");
+    if(lastBackup===thisWeekKey)return; // already backed up this week
+    // Trigger backup
+    const ok=generateWeeklyBackup(members,auditLog);
+    if(ok){
+      localStorage.setItem("khobidi_last_backup",thisWeekKey);
+      toast2("📥 Weekly backup downloaded automatically","success");
+    }
+  },[hydrated,admin,members,auditLog]);
 
   const log=(action,detail,mid)=>setAuditLog(l=>[mkLog(admin,action,detail,mid),...l]);
   const toast2=(msg,type="success")=>{setToast({msg,type});setTimeout(()=>setToast(null),3200);};
@@ -370,7 +505,10 @@ export default function App(){
           <div style={{width:32,height:32,borderRadius:9,background:G.primary,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,fontWeight:800,color:"white",fontFamily:"'Georgia',serif",letterSpacing:.7}}>KSG</div>
           <div style={{flex:1,minWidth:0}}>
             <div style={{fontWeight:800,fontSize:13,color:G.text,letterSpacing:-.2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>Khobidi Savings Group</div>
-            <div style={{fontSize:10,color:G.textSoft}}>{admin} · Week {week}</div>
+            <div style={{fontSize:10,color:G.textSoft,display:"flex",alignItems:"center",gap:5}}>
+              <span style={{width:6,height:6,borderRadius:"50%",background:syncStatus==="synced"?G.primary:syncStatus==="offline"?G.red:G.gold,boxShadow:syncStatus==="synced"?`0 0 6px ${G.primary}`:"none"}}/>
+              {admin} · Wk {week} · {syncStatus==="synced"?"Live":syncStatus==="offline"?"Offline":"Connecting..."}
+            </div>
           </div>
         </header>
       )}
@@ -406,7 +544,7 @@ export default function App(){
         </div>
         <div style={{margin:"0 12px 12px",padding:"10px 12px",background:G.primaryL,borderRadius:12,display:"flex",alignItems:"center",gap:8}}>
           <div style={{width:28,height:28,borderRadius:8,background:G.primary,display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,color:"white"}}>👤</div>
-          <div><div style={{fontSize:12,fontWeight:700,color:G.primary}}>{admin}</div><div style={{fontSize:10,color:G.accent}}>Administrator</div></div>
+          <div><div style={{fontSize:12,fontWeight:700,color:G.primary}}>{admin}</div><div style={{fontSize:10,color:G.accent,display:"flex",alignItems:"center",gap:5}}><span style={{width:6,height:6,borderRadius:"50%",background:syncStatus==="synced"?G.primary:syncStatus==="offline"?G.red:G.gold,boxShadow:syncStatus==="synced"?`0 0 6px ${G.primary}`:"none"}}/>{syncStatus==="synced"?"Live · Synced":syncStatus==="offline"?"Offline":"Connecting..."}</div></div>
         </div>
         <nav style={{flex:1,padding:"4px 12px",display:"flex",flexDirection:"column",gap:2}}>
           {NAV.map(n=><NavItem key={n.v} icon={n.icon} label={n.label} active={view===n.v} onClick={()=>{setView(n.v);if(n.v!=="members")setSelMid(null);if(isMobile)setSidebarOpen(false);}} badge={n.v==="weekly"?pendingWeek:n.v==="loans"?overdueMembers.length:0}/>)}
@@ -1533,13 +1671,32 @@ function AuditView({auditLog,members}){
     <div>
       <PageHeader title="📋 Audit Log" sub={`${auditLog.length} actions logged · Full timestamped history`}/>
 
+      <Card style={{marginBottom:14,background:`linear-gradient(135deg,${G.primaryL} 0%,#FDF6E9 100%)`,borderLeft:`4px solid ${G.primary}`}}>
+        <div style={{display:"flex",alignItems:"center",gap:14,flexWrap:"wrap"}}>
+          <div style={{fontSize:28}}>🔄</div>
+          <div style={{flex:1,minWidth:200}}>
+            <div style={{fontWeight:800,fontSize:14,color:G.text,marginBottom:2}}>Automatic Weekly Backup</div>
+            <div style={{fontSize:12,color:G.textMid,lineHeight:1.5}}>
+              The app saves a full Excel snapshot every <strong>Monday after 4:00 AM</strong>, once per week.
+              {(()=>{
+                const lb=typeof window!=="undefined"&&localStorage.getItem("khobidi_last_backup");
+                return lb?<><br/><span style={{color:G.primary,fontWeight:600}}>✓ Last backup: {lb}</span></>:<><br/><span style={{color:G.gold,fontWeight:600}}>⏳ No backup taken yet this week</span></>;
+              })()}
+            </div>
+          </div>
+          <button style={{padding:"10px 18px",borderRadius:10,border:"none",background:G.primary,color:"white",fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"inherit",boxShadow:`0 6px 16px rgba(61,107,79,.3)`}} onClick={()=>{generateWeeklyBackup(members,auditLog);}}>
+            📥 Download Backup Now
+          </button>
+        </div>
+      </Card>
+
       <Card style={{marginBottom:14}}>
         <div style={{display:"flex",gap:10,flexWrap:"wrap",alignItems:"center"}}>
           <input placeholder="🔍 Search audit log..." value={search} onChange={e=>setSearch(e.target.value)} style={{...inputStyle,marginBottom:0,flex:"1 1 200px"}}/>
           <select value={filter} onChange={e=>setFilter(e.target.value)} style={{...inputStyle,marginBottom:0,width:160}}>
             {actions.map(a=><option key={a} value={a}>{a==="all"?"All Actions":a}</option>)}
           </select>
-          <button style={{padding:"9px 14px",borderRadius:9,border:"none",background:G.primary,color:"white",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}} onClick={exportExcel}>📊 Export Excel</button>
+          <button style={{padding:"9px 14px",borderRadius:9,border:"none",background:G.primary,color:"white",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}} onClick={exportExcel}>📊 Audit Excel</button>
           <button style={{padding:"9px 14px",borderRadius:9,border:`1px solid ${G.border}`,background:G.bg,color:G.textMid,fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:"inherit"}} onClick={exportCSV}>📋 CSV</button>
         </div>
       </Card>
