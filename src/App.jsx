@@ -18,7 +18,9 @@ const firebaseConfig = {
 const firebaseApp = initializeApp(firebaseConfig);
 const db = getFirestore(firebaseApp);
 const auth = getAuth(firebaseApp);
-const DB_DOC = doc(db, "groups", "khobidi");
+const DB_DOC = doc(db, "groups", "khobidi-s2026");
+// NOTE: After deploying, you must also update Firestore rules in Firebase Console
+// to allow /groups/khobidi-s2026 access (see instructions below).
 
 /* Group secret code — required to unlock the app on each new device */
 const GROUP_CODE = "ZaNdalamal";
@@ -52,7 +54,7 @@ const PENALTY_AMT  = 20;
 const MEM_FEE      = 110;
 const ADMIN_CREDS  = { "Angella":"1234", "Sandra":"5678", "Fatima":"9012" };
 const ADMINS       = Object.keys(ADMIN_CREDS);
-const STORE_KEY    = "khobidi_v3";
+const STORE_KEY    = "khobidi_s2026";
 
 const TIERS = [
   { label:"Platinum", min:85, rate:0.12, color:"#7B5EA7", bg:"#F3EFF9", icon:"💎" },
@@ -93,9 +95,59 @@ function loanBalance(loan){
   return Math.max(0,total-paid);
 }
 
-const INIT_MEMBERS=["Angella","Fatima","Sandra","Netty","Member E","Member F","Member G","Member H","Member I","Member J","Member K","Member L"]
-  .map((name,i)=>({id:i+1,name,email:`${name.toLowerCase()}@group.com`,
-    membershipFeePaid:false,refundablePaid:false,weeklyContributions:{},loans:[],penalties:[]}));
+/* 25 active contribution slots — 18 unique people, some hold 2 slots (double contribution).
+   Status as of Sat 7 June 2026 = end of Week 23.
+   "complete" for June = paid Weeks 1–26 inclusive (all of June prepaid)
+   "paid" = paid Weeks 1–23 inclusive (current week only)  */
+const MEMBER_ROSTER = [
+  {name:"Cellastina 1",  weeksPaid:26}, // complete
+  {name:"Cellastina 2",  weeksPaid:26}, // complete
+  {name:"Shereen 1",     weeksPaid:26}, // complete
+  {name:"Matilda 1",     weeksPaid:26}, // complete
+  {name:"Matilda 2",     weeksPaid:23}, // paid
+  {name:"Alexis 1",      weeksPaid:23}, // paid
+  {name:"Alexis 2",      weeksPaid:23}, // paid
+  {name:"Angella",       weeksPaid:23}, // paid
+  {name:"Fatima 1",      weeksPaid:26}, // complete
+  {name:"Fatima 2",      weeksPaid:26}, // complete
+  {name:"Shereen 2",     weeksPaid:26}, // complete
+  {name:"Netty 1",       weeksPaid:23}, // paid
+  {name:"Netty 2",       weeksPaid:23}, // paid
+  {name:"Sandra",        weeksPaid:23}, // paid
+  {name:"Annie",         weeksPaid:23}, // paid
+  {name:"Mervis",        weeksPaid:23}, // paid
+  {name:"Blefaith",      weeksPaid:26}, // complete
+  {name:"Mkonyo",        weeksPaid:26}, // complete
+  {name:"Onani",         weeksPaid:23}, // paid
+  {name:"Chelsea",       weeksPaid:23}, // paid
+  {name:"Cynthia 1",     weeksPaid:23}, // paid
+  {name:"Cynthia 2",     weeksPaid:23}, // paid
+  {name:"Peggy",         weeksPaid:26}, // complete
+  {name:"Ellen",         weeksPaid:26}, // complete
+  {name:"Temwa",         weeksPaid:26}, // complete
+];
+
+function seedContributions(weeksPaid){
+  // Returns an object like {1:{paid:true,amount:60,date:"..."},2:{...}, ...}
+  const out={};
+  for(let w=1;w<=weeksPaid;w++){
+    // Use the actual Sunday of each week as the payment date
+    const sundayDate=SUNDAYS[w-1]?.date||new Date();
+    out[w]={paid:true,amount:60,date:sundayDate.toISOString()};
+  }
+  return out;
+}
+
+const INIT_MEMBERS = MEMBER_ROSTER.map((m,i)=>({
+  id:i+1,
+  name:m.name,
+  email:`${m.name.toLowerCase().replace(/\s/g,"")}@group.com`,
+  membershipFeePaid:true,
+  refundablePaid:true,
+  weeklyContributions:seedContributions(m.weeksPaid),
+  loans:[],
+  penalties:[],
+}));
 
 function fmt(n){return "€"+Number(n).toFixed(2);}
 function fd(d){return d?new Date(d).toLocaleDateString("en-GB"):"—";}
@@ -292,7 +344,14 @@ export default function App(){
   const [pinErr,setPinErr]=useState("");
   const [view,setView]=useState("dashboard");
   const [selMid,setSelMid]=useState(null);
-  const [week,setWeek]=useState(1);
+  const [week,setWeek]=useState(()=>{
+    // Auto-detect current week based on today's date
+    const today=new Date();
+    for(let i=SUNDAYS.length-1;i>=0;i--){
+      if(SUNDAYS[i].date<=today)return i+1;
+    }
+    return 1;
+  });
   const [toast,setToast]=useState(null);
   const [confirm,setConfirm]=useState(null);
   const [portalMid,setPortalMid]=useState(null);
