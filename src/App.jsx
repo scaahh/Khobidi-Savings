@@ -152,6 +152,51 @@ const INIT_MEMBERS = MEMBER_ROSTER.map((m,i)=>({
 function fmt(n){return "€"+Number(n).toFixed(2);}
 function fd(d){return d?new Date(d).toLocaleDateString("en-GB"):"—";}
 function fds(d){return d?new Date(d).toLocaleDateString("en-GB",{day:"numeric",month:"short"}):"—";}
+/* Returns human-friendly relative time like "2 hours ago", "yesterday", "3 days ago" */
+function fdr(d){
+  if(!d)return "—";
+  const date=new Date(d);
+  const now=new Date();
+  const diffMs=now-date;
+  const diffSec=Math.round(diffMs/1000);
+  const diffMin=Math.round(diffSec/60);
+  const diffHr=Math.round(diffMin/60);
+  const diffDay=Math.round(diffHr/24);
+  if(diffSec<60)return "just now";
+  if(diffMin<60)return `${diffMin}m ago`;
+  if(diffHr<24)return `${diffHr}h ago`;
+  if(diffDay===1)return "yesterday";
+  if(diffDay<7)return `${diffDay} days ago`;
+  if(diffDay<30)return `${Math.round(diffDay/7)} weeks ago`;
+  return date.toLocaleDateString("en-GB",{day:"numeric",month:"short",year:"2-digit"});
+}
+
+/* Haptic feedback (vibrates phone on supported devices) */
+function haptic(ms=40){try{navigator.vibrate?.(ms);}catch{}}
+/* Tiny success chime via WebAudio API (no asset needed) */
+function chime(success=true){
+  try{
+    const ctx=new (window.AudioContext||window.webkitAudioContext)();
+    const osc=ctx.createOscillator();
+    const gain=ctx.createGain();
+    osc.connect(gain);gain.connect(ctx.destination);
+    osc.frequency.value=success?660:330;
+    osc.type="sine";
+    gain.gain.setValueAtTime(0.14,ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001,ctx.currentTime+0.18);
+    osc.start(ctx.currentTime);
+    osc.stop(ctx.currentTime+0.18);
+    if(success){
+      // Second higher note for success "ding"
+      const osc2=ctx.createOscillator();const g2=ctx.createGain();
+      osc2.connect(g2);g2.connect(ctx.destination);
+      osc2.frequency.value=990;osc2.type="sine";
+      g2.gain.setValueAtTime(0.12,ctx.currentTime+0.08);
+      g2.gain.exponentialRampToValueAtTime(0.001,ctx.currentTime+0.26);
+      osc2.start(ctx.currentTime+0.08);osc2.stop(ctx.currentTime+0.26);
+    }
+  }catch{}
+}
 /* localStorage cache for instant load while Firestore syncs */
 function load(){try{const r=localStorage.getItem(STORE_KEY);if(r)return JSON.parse(r);}catch{}return null;}
 function saveLocal(d){try{localStorage.setItem(STORE_KEY,JSON.stringify(d));}catch{}}
@@ -245,10 +290,11 @@ function ConfirmDialog({msg,sub,onConfirm,onCancel,confirmLabel="Confirm",danger
 }
 
 /* ─────────────────────────────────── TOAST */
-function Toast({msg,type}){
+function Toast({msg,type,undoFn,onUndo}){
   return(
-    <div style={{position:"fixed",top:20,right:20,background:type==="error"?"#C94040":type==="warn"?"#C8973A":G.primary,color:"white",padding:"12px 20px",borderRadius:12,fontWeight:600,zIndex:9999,fontSize:13,boxShadow:"0 8px 32px rgba(0,0,0,.2)",display:"flex",alignItems:"center",gap:8,fontFamily:"inherit",maxWidth:320}}>
-      {type==="error"?"❌":type==="warn"?"⚠️":"✅"} {msg}
+    <div style={{position:"fixed",top:20,right:20,left:20,maxWidth:380,marginLeft:"auto",background:type==="error"?"#C94040":type==="warn"?"#C8973A":G.primary,color:"white",padding:"12px 16px",borderRadius:12,fontWeight:600,zIndex:9999,fontSize:13,boxShadow:"0 8px 32px rgba(0,0,0,.2)",display:"flex",alignItems:"center",gap:10,fontFamily:"inherit",animation:"slideInTop .25s ease"}}>
+      <span style={{flex:1,minWidth:0}}>{type==="error"?"❌":type==="warn"?"⚠️":"✅"} {msg}</span>
+      {undoFn&&<button onClick={()=>{onUndo();}} style={{background:"rgba(255,255,255,.22)",color:"white",border:"1px solid rgba(255,255,255,.4)",borderRadius:7,padding:"5px 12px",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit",flexShrink:0}}>↶ Undo</button>}
     </div>
   );
 }
@@ -333,6 +379,82 @@ function ScoreBar({score,size="md"}){
   );
 }
 
+/* ─────────────────────────────────── GLOBAL SEARCH MODAL */
+function GlobalSearch({members,auditLog,onClose,onPickMember,onJumpView}){
+  const [q,setQ]=useState("");
+  const ql=q.trim().toLowerCase();
+  const memberHits=ql?members.filter(m=>m.name.toLowerCase().includes(ql)):[];
+  const logHits=ql?auditLog.filter(a=>(a.detail||"").toLowerCase().includes(ql)||(a.action||"").toLowerCase().includes(ql)).slice(0,8):[];
+  const sectionHits=ql?[
+    {l:"Dashboard",v:"dashboard",icon:"🏠"},
+    {l:"Members",v:"members",icon:"👥"},
+    {l:"Payments",v:"weekly",icon:"💵"},
+    {l:"Loans",v:"loans",icon:"💳"},
+    {l:"Penalties",v:"penalties",icon:"⚠️"},
+    {l:"Calendar",v:"calendar",icon:"📅"},
+    {l:"Analytics",v:"analytics",icon:"📊"},
+    {l:"Profit Optimizer",v:"profit",icon:"🎯"},
+    {l:"Credit Scoring",v:"credit",icon:"⭐"},
+    {l:"P2P Investment",v:"p2p",icon:"📈"},
+    {l:"Cashflow",v:"cashflow",icon:"〰️"},
+    {l:"Audit Log",v:"audit",icon:"📋"},
+  ].filter(s=>s.l.toLowerCase().includes(ql)):[];
+  return(
+    <div onClick={onClose} style={{position:"fixed",inset:0,background:"rgba(15,25,18,.6)",backdropFilter:"blur(8px)",zIndex:9500,display:"flex",alignItems:"flex-start",justifyContent:"center",paddingTop:80}}>
+      <div onClick={e=>e.stopPropagation()} style={{background:G.surface,borderRadius:18,width:"92%",maxWidth:520,maxHeight:"70vh",overflow:"hidden",boxShadow:"0 32px 80px rgba(0,0,0,.4)",display:"flex",flexDirection:"column",fontFamily:"'DM Sans',sans-serif"}}>
+        <div style={{padding:"14px 18px",borderBottom:`1px solid ${G.border}`,display:"flex",alignItems:"center",gap:10}}>
+          <span style={{fontSize:18}}>🔍</span>
+          <input autoFocus value={q} onChange={e=>setQ(e.target.value)} placeholder="Search members, actions, sections..." style={{flex:1,border:"none",outline:"none",background:"none",fontSize:15,color:G.text,fontFamily:"inherit"}}/>
+          <button onClick={onClose} style={{border:"none",background:G.bg,color:G.textMid,borderRadius:6,padding:"4px 10px",fontSize:11,cursor:"pointer",fontFamily:"inherit"}}>ESC</button>
+        </div>
+        <div style={{overflowY:"auto",flex:1,padding:8}}>
+          {!ql&&<div style={{padding:30,textAlign:"center",color:G.textSoft,fontSize:13}}>Type to search members, audit log entries, or sections</div>}
+          {ql&&memberHits.length===0&&logHits.length===0&&sectionHits.length===0&&<div style={{padding:30,textAlign:"center",color:G.textSoft,fontSize:13}}>No results for "{q}"</div>}
+          {sectionHits.length>0&&<div style={{padding:"4px 10px"}}>
+            <div style={{fontSize:10,fontWeight:700,color:G.textSoft,letterSpacing:1,textTransform:"uppercase",padding:"6px 4px"}}>Sections</div>
+            {sectionHits.map(s=>(
+              <button key={s.v} onClick={()=>{onJumpView(s.v);onClose();}} style={{width:"100%",display:"flex",alignItems:"center",gap:10,padding:"10px 12px",border:"none",background:"none",borderRadius:9,cursor:"pointer",fontSize:13,fontFamily:"inherit",color:G.text,textAlign:"left"}} onMouseEnter={e=>e.currentTarget.style.background=G.bg} onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+                <span style={{fontSize:18}}>{s.icon}</span>
+                <span style={{fontWeight:600}}>{s.l}</span>
+                <span style={{marginLeft:"auto",color:G.textSoft,fontSize:11}}>↵</span>
+              </button>
+            ))}
+          </div>}
+          {memberHits.length>0&&<div style={{padding:"4px 10px"}}>
+            <div style={{fontSize:10,fontWeight:700,color:G.textSoft,letterSpacing:1,textTransform:"uppercase",padding:"6px 4px"}}>Members ({memberHits.length})</div>
+            {memberHits.map(m=>{
+              const score=creditScore(m);const tier=getTier(score);
+              const tot=Object.values(m.weeklyContributions).reduce((s,c)=>s+(c.paid?c.amount:0),0);
+              return(
+                <button key={m.id} onClick={()=>{onPickMember(m.id);onClose();}} style={{width:"100%",display:"flex",alignItems:"center",gap:10,padding:"10px 12px",border:"none",background:"none",borderRadius:9,cursor:"pointer",fontFamily:"inherit",color:G.text,textAlign:"left"}} onMouseEnter={e=>e.currentTarget.style.background=G.bg} onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+                  <div style={{width:32,height:32,borderRadius:"50%",background:tier.bg,color:tier.color,display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,fontWeight:700}}>{m.name.charAt(0).toUpperCase()}</div>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontWeight:700,fontSize:13}}>{m.name}</div>
+                    <div style={{fontSize:11,color:G.textSoft}}>{tier.label} · Total: {fmt(tot)}</div>
+                  </div>
+                  <span style={{color:G.textSoft,fontSize:14}}>›</span>
+                </button>
+              );
+            })}
+          </div>}
+          {logHits.length>0&&<div style={{padding:"4px 10px"}}>
+            <div style={{fontSize:10,fontWeight:700,color:G.textSoft,letterSpacing:1,textTransform:"uppercase",padding:"6px 4px"}}>Audit Log ({logHits.length}+)</div>
+            {logHits.map(a=>(
+              <button key={a.id} onClick={()=>{onJumpView("audit");onClose();}} style={{width:"100%",display:"flex",alignItems:"flex-start",gap:10,padding:"10px 12px",border:"none",background:"none",borderRadius:9,cursor:"pointer",fontFamily:"inherit",color:G.text,textAlign:"left"}} onMouseEnter={e=>e.currentTarget.style.background=G.bg} onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+                <span style={{fontSize:13}}>📋</span>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontSize:12,fontWeight:600}}>{a.action}: {a.detail}</div>
+                  <div style={{fontSize:10,color:G.textSoft}}>{a.admin} · {fdr(a.ts)}</div>
+                </div>
+              </button>
+            ))}
+          </div>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ─────────────────────────────────── ROOT APP */
 export default function App(){
   const saved=load();
@@ -357,7 +479,52 @@ export default function App(){
   const [portalMid,setPortalMid]=useState(null);
   const [portalStep,setPortalStep]=useState(null); // null | "pin" | "pick"
   const [sidebarOpen,setSidebarOpen]=useState(false);
+  const [searchOpen,setSearchOpen]=useState(false);
   const [isMobile,setIsMobile]=useState(typeof window!=="undefined"&&window.innerWidth<1024);
+
+  /* Pull-to-refresh on mobile */
+  const [ptrPull,setPtrPull]=useState(0);
+  const [ptrRefreshing,setPtrRefreshing]=useState(false);
+  useEffect(()=>{
+    if(!isMobile||!admin)return;
+    let startY=0;let pulling=false;
+    const onStart=(e)=>{if(window.scrollY===0){startY=e.touches[0].clientY;pulling=true;}};
+    const onMove=(e)=>{
+      if(!pulling)return;
+      const diff=e.touches[0].clientY-startY;
+      if(diff>0&&window.scrollY===0){
+        setPtrPull(Math.min(diff,100));
+      }
+    };
+    const onEnd=()=>{
+      if(!pulling)return;
+      pulling=false;
+      if(ptrPull>60){
+        setPtrRefreshing(true);haptic(50);
+        setTimeout(()=>{setPtrRefreshing(false);setPtrPull(0);toast2("✓ Refreshed");},700);
+      }else{
+        setPtrPull(0);
+      }
+    };
+    window.addEventListener("touchstart",onStart,{passive:true});
+    window.addEventListener("touchmove",onMove,{passive:true});
+    window.addEventListener("touchend",onEnd);
+    return()=>{
+      window.removeEventListener("touchstart",onStart);
+      window.removeEventListener("touchmove",onMove);
+      window.removeEventListener("touchend",onEnd);
+    };
+  },[isMobile,admin,ptrPull]);
+
+  // Ctrl+K opens search
+  useEffect(()=>{
+    const onKey=(e)=>{
+      if((e.ctrlKey||e.metaKey)&&e.key==="k"){e.preventDefault();setSearchOpen(true);}
+      if(e.key==="Escape")setSearchOpen(false);
+    };
+    window.addEventListener("keydown",onKey);
+    return()=>window.removeEventListener("keydown",onKey);
+  },[]);
   const [syncStatus,setSyncStatus]=useState("connecting"); // connecting | synced | offline
   const [hydrated,setHydrated]=useState(false); // wait for first Firestore snapshot before saving back
   const [unlocked,setUnlocked]=useState(typeof window!=="undefined"&&localStorage.getItem(UNLOCK_KEY)==="yes");
@@ -440,7 +607,16 @@ export default function App(){
   },[hydrated,admin,members,auditLog]);
 
   const log=(action,detail,mid)=>setAuditLog(l=>[mkLog(admin,action,detail,mid),...l]);
-  const toast2=(msg,type="success")=>{setToast({msg,type});setTimeout(()=>setToast(null),3200);};
+  /* Enhanced toast with haptic + sound + optional undo button */
+  const toast2=(msg,type="success",undoFn=null)=>{
+    setToast({msg,type,undoFn,id:Date.now()});
+    haptic(type==="error"?80:30);
+    chime(type!=="error");
+    setTimeout(()=>setToast(t=>t&&t.msg===msg?null:t),undoFn?8000:3200);
+  };
+  /* Snapshot+restore for undo */
+  const snapshot=()=>({members:JSON.parse(JSON.stringify(members)),auditLog:JSON.parse(JSON.stringify(auditLog))});
+  const restoreSnap=(s)=>{setMembers(s.members);setAuditLog(s.auditLog);haptic(50);toast2("↶ Undone","success");};
   const upd=(id,fn)=>setMembers(ms=>ms.map(m=>m.id===id?fn({...m}):m));
   const ask=(cfg)=>setConfirm(cfg);
   const closeConfirm=()=>setConfirm(null);
@@ -495,7 +671,7 @@ export default function App(){
           <h2 style={LS.welcome}>Group Access Required</h2>
           <p style={LS.welcomeSub}>Enter the group code to unlock this device. You only need to do this once.</p>
           <label style={LS.label}>Group Code</label>
-          <input type="password" placeholder="Enter group code" value={codeInput}
+          <input type="password" inputMode="text" placeholder="Enter group code" value={codeInput}
             style={{...LS.input,...(codeErr?{borderColor:G.red,background:"#FEF7F7"}:{}),fontSize:16,letterSpacing:2,textAlign:"center"}}
             onChange={e=>{setCodeInput(e.target.value);setCodeErr("");}}
             onKeyDown={e=>{if(e.key==="Enter")tryUnlock();}} autoFocus/>
@@ -517,7 +693,7 @@ export default function App(){
           <h1 style={LS.title}>Member Login</h1>
           <p style={LS.sub}>Read-only access to your dashboard</p>
           <label style={LS.label}>Member PIN</label>
-          <input id="mpin" type="password" placeholder="0000" style={LS.input} onKeyDown={e=>{if(e.key==="Enter"){if(e.target.value==="0000"){setPortalStep("pick");setPortalErr("");}else setPortalErr("Incorrect PIN");}}} autoFocus/>
+          <input id="mpin" type="password" inputMode="numeric" pattern="[0-9]*" placeholder="0000" style={LS.input} onKeyDown={e=>{if(e.key==="Enter"){if(e.target.value==="0000"){setPortalStep("pick");setPortalErr("");}else setPortalErr("Incorrect PIN");}}} autoFocus/>
           {portalErr&&<p style={LS.err}>{portalErr}</p>}
           <button style={LS.btn} onClick={()=>{const v=document.getElementById("mpin").value;if(v==="0000"){setPortalStep("pick");setPortalErr("");}else setPortalErr("Incorrect PIN");}}>Continue →</button>
         </div>
@@ -592,7 +768,7 @@ export default function App(){
               <span>🔒</span>
               <span>{adminSel?`PIN for ${adminSel}`:"Select an account above"}</span>
             </div>
-            <input id="apin" type="password" placeholder="• • • •" style={{...LS.input,...(pinErr?{borderColor:G.red,background:"#FEF7F7"}:{})}}
+            <input id="apin" type="password" inputMode="numeric" pattern="[0-9]*" placeholder="• • • •" style={{...LS.input,...(pinErr?{borderColor:G.red,background:"#FEF7F7"}:{})}}
               onKeyDown={e=>{if(e.key==="Enter"){if(!adminSel){setPinErr("Please select your account first");return;}if(e.target.value===ADMIN_CREDS[adminSel]){setAdmin(adminSel);setPinErr("");}else setPinErr("Incorrect PIN. Try again.");}}}/>
           </div>
           {pinErr&&<div style={LS.errBox}>⚠️ {pinErr}</div>}
@@ -632,7 +808,23 @@ export default function App(){
   ];
 
   return(
-    <div style={{minHeight:"100vh",background:G.bg,fontFamily:"'DM Sans','Helvetica Neue',sans-serif",color:G.text,display:"flex",flexDirection:isMobile?"column":"row"}}>
+    <div style={{minHeight:"100vh",background:G.bg,fontFamily:"'DM Sans','Helvetica Neue',sans-serif",color:G.text,display:"flex",flexDirection:isMobile?"column":"row",paddingTop:ptrPull?ptrPull:0,transition:ptrPull===0?"padding-top .25s":"none"}}>
+      <style>{`
+        @keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
+        @keyframes slideInTop{from{opacity:0;transform:translateY(-12px)}to{opacity:1;transform:translateY(0)}}
+        @keyframes fadeIn{from{opacity:0}to{opacity:1}}
+        @keyframes slideInLeft{from{transform:translateX(-100%)}to{transform:translateX(0)}}
+        @keyframes pulse{0%{opacity:1}50%{opacity:.6}100%{opacity:1}}
+        @keyframes pop{0%{transform:scale(.9);opacity:0}60%{transform:scale(1.04)}100%{transform:scale(1);opacity:1}}
+        .row-anim{animation:pop .3s ease}
+      `}</style>
+
+      {/* PULL-TO-REFRESH INDICATOR */}
+      {isMobile&&ptrPull>10&&(
+        <div style={{position:"fixed",top:Math.min(ptrPull-30,40),left:"50%",transform:"translateX(-50%)",zIndex:200,background:G.surface,borderRadius:"50%",width:36,height:36,display:"flex",alignItems:"center",justifyContent:"center",boxShadow:G.shadowMd,border:`1px solid ${G.border}`}}>
+          {ptrRefreshing?<span style={{display:"inline-block",animation:"spin 1s linear infinite",fontSize:18}}>↻</span>:<span style={{fontSize:18,transform:`rotate(${Math.min(ptrPull*3,180)}deg)`,transition:"transform .1s"}}>↓</span>}
+        </div>
+      )}
 
       {/* MOBILE TOP BAR */}
       {isMobile&&(
@@ -646,6 +838,7 @@ export default function App(){
               {admin} · Wk {week} · {syncStatus==="synced"?"Live":syncStatus==="offline"?"Offline":"Connecting..."}
             </div>
           </div>
+          <button aria-label="Search" onClick={()=>setSearchOpen(true)} style={{width:38,height:38,borderRadius:10,border:`1px solid ${G.border}`,background:G.bg,color:G.text,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,padding:0,fontFamily:"inherit"}}>🔍</button>
         </header>
       )}
 
@@ -702,13 +895,14 @@ export default function App(){
 
       {/* MAIN */}
       <main style={{flex:1,overflowY:"auto",padding:isMobile?"18px 16px 100px":"32px 36px",minWidth:0,width:"100%"}}>
-        {toast&&<Toast msg={toast.msg} type={toast.type}/>}
+        {toast&&<Toast msg={toast.msg} type={toast.type} undoFn={toast.undoFn} onUndo={()=>{if(toast.undoFn){toast.undoFn();setToast(null);}}}/>}
         {confirm&&<ConfirmDialog {...confirm} onCancel={closeConfirm}/>}
+        {searchOpen&&<GlobalSearch members={members} auditLog={auditLog} onClose={()=>setSearchOpen(false)} onPickMember={(id)=>{setView("members");setSelMid(id);}} onJumpView={(v)=>{setView(v);setSelMid(null);}}/>}
 
         {view==="dashboard"&&<DashView members={members} totalCollected={totalCollected} totalPenalties={totalPenalties} totalLoansOut={totalLoansOut} totalInterest={totalInterest} week={week} pendingWeek={pendingWeek} overdueMembers={overdueMembers} idleCapital={idleCapital} setView={setView}/>}
         {view==="members"&&!selMid&&<MembersView members={members} onSelect={id=>setSelMid(id)} upd={upd} toast2={toast2} log={log}/>}
         {view==="members"&&selMid&&selMember&&<MemberDetail member={selMember} upd={upd} toast2={toast2} log={log} week={week} ask={ask} closeConfirm={closeConfirm} onBack={()=>setSelMid(null)}/>}
-        {view==="weekly"&&<WeeklyView members={members} week={week} upd={upd} toast2={toast2} log={log} ask={ask} closeConfirm={closeConfirm}/>}
+        {view==="weekly"&&<WeeklyView members={members} week={week} upd={upd} toast2={toast2} log={log} ask={ask} closeConfirm={closeConfirm} snapshot={snapshot} restoreSnap={restoreSnap} setMembers={setMembers} setAuditLog={setAuditLog} admin={admin}/>}
         {view==="loans"&&<LoansView members={members} upd={upd} toast2={toast2} log={log} ask={ask} closeConfirm={closeConfirm}/>}
         {view==="penalties"&&<PenaltiesView members={members} upd={upd} toast2={toast2} log={log}/>}
         {view==="calendar"&&<CalendarView members={members} week={week} setWeek={setWeek} setView={setView}/>}
@@ -825,7 +1019,7 @@ function DashView({members,totalCollected,totalPenalties,totalLoansOut,totalInte
         </div>
       )}
 
-      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(170px,1fr))",gap:14,marginBottom:24}}>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(170px,1fr))",gap:14,marginBottom:18}}>
         <StatCard icon="💰" label="Collected" value={fmt(totalCollected)} color={G.primary}/>
         <StatCard icon="⏳" label={`Week ${week} Pending`} value={pendingWeek+" / "+members.length} color={pendingWeek>0?G.gold:G.primary}/>
         <StatCard icon="💳" label="Loans Out" value={fmt(totalLoansOut)} color={G.blue}/>
@@ -833,6 +1027,61 @@ function DashView({members,totalCollected,totalPenalties,totalLoansOut,totalInte
         <StatCard icon="⚠️" label="Penalties" value={fmt(totalPenalties)} color={G.red}/>
         <StatCard icon="🏦" label="Active Loans" value={activeLoans} color={G.accent}/>
       </div>
+
+      {/* TRANSPARENT LOAN PROMOTION — informational, not high-pressure */}
+      <Card style={{marginBottom:16,background:`linear-gradient(135deg,${G.primaryL} 0%,#F1EBF9 100%)`,border:`1px solid ${G.border}`,borderLeft:`4px solid ${G.purple}`}}>
+        <div style={{display:"flex",alignItems:"flex-start",gap:14,flexWrap:"wrap"}}>
+          <div style={{fontSize:30,flexShrink:0}}>💳</div>
+          <div style={{flex:1,minWidth:240}}>
+            <div style={{fontWeight:800,fontSize:14,color:G.text,marginBottom:4,fontFamily:"'Georgia',serif"}}>Loan Facility Available</div>
+            <div style={{fontSize:12,color:G.textMid,lineHeight:1.6,marginBottom:10}}>
+              The group offers loans up to <strong>€{LOAN_AMOUNT.toLocaleString()}</strong> per member, repayable over 3 months.
+              Your rate is <strong>determined by your credit tier</strong> — better payment history means lower rates.
+              When members take loans, the interest earned is shared back to the group at season end.
+            </div>
+            <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:10}}>
+              {TIERS.map(t=>(
+                <div key={t.label} style={{padding:"5px 10px",borderRadius:8,background:t.bg,border:`1px solid ${t.color}33`}}>
+                  <div style={{fontSize:10,fontWeight:700,color:t.color}}>{t.icon} {t.label}</div>
+                  <div style={{fontSize:10,color:G.textMid}}>{Math.round(t.rate*100)}% · ≥{t.min} pts</div>
+                </div>
+              ))}
+            </div>
+            <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+              <button style={{padding:"7px 14px",borderRadius:8,border:"none",background:G.purple,color:"white",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}} onClick={()=>setView("loans")}>View Loans →</button>
+              <button style={{padding:"7px 14px",borderRadius:8,border:`1px solid ${G.purple}`,background:"white",color:G.purple,fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}} onClick={()=>setView("credit")}>See Eligibility →</button>
+            </div>
+          </div>
+        </div>
+      </Card>
+
+      {/* SHARE GROUP UPDATE — generates a WhatsApp-ready message */}
+      <Card style={{marginBottom:24,background:"#F0F9F1",borderLeft:`4px solid ${G.primary}`}}>
+        <div style={{display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+          <div style={{fontSize:22}}>💬</div>
+          <div style={{flex:1,minWidth:180}}>
+            <div style={{fontWeight:800,fontSize:13,color:G.text,marginBottom:2}}>Share Weekly Update</div>
+            <div style={{fontSize:11,color:G.textMid}}>Post a status snapshot to the group WhatsApp.</div>
+          </div>
+          <button style={{padding:"8px 14px",borderRadius:9,border:"none",background:"#25D366",color:"white",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}} onClick={()=>{
+            const msg=`📊 *Khobidi Savings — Week ${week} Update*%0A%0A` +
+              `✅ Paid: ${members.length-pendingWeek}/${members.length}%0A` +
+              `⏳ Pending: ${pendingWeek}%0A` +
+              `💰 Pot total: ${fmt(totalCollected)}%0A` +
+              `💳 Loans out: ${fmt(totalLoansOut)}%0A%0A` +
+              `Don't forget Sunday's contribution!`;
+            window.open(`https://wa.me/?text=${msg}`,"_blank");
+          }}>📤 Share to WhatsApp</button>
+          <button style={{padding:"8px 14px",borderRadius:9,border:`1px solid ${G.border}`,background:"white",color:G.textMid,fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:"inherit"}} onClick={()=>{
+            const text=`Khobidi Savings — Week ${week} Update\n\n` +
+              `Paid: ${members.length-pendingWeek}/${members.length}\n` +
+              `Pending: ${pendingWeek}\n` +
+              `Pot total: ${fmt(totalCollected)}\n` +
+              `Loans out: ${fmt(totalLoansOut)}`;
+            navigator.clipboard?.writeText(text).then(()=>{haptic(30);alert("Copied to clipboard");}).catch(()=>{});
+          }}>📋 Copy</button>
+        </div>
+      </Card>
 
       <div style={{display:"grid",gridTemplateColumns:"2fr 1fr",gap:16}}>
         <Card>
@@ -975,7 +1224,22 @@ function MemberDetail({member:m,upd,toast2,log,week,ask,closeConfirm,onBack}){
 
   return(
     <div>
-      <button style={{background:"none",border:"none",color:G.blue,cursor:"pointer",fontSize:13,marginBottom:14,padding:0,fontWeight:600,fontFamily:"inherit"}} onClick={onBack}>← Back to Members</button>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14,flexWrap:"wrap",gap:8}}>
+        <button style={{background:"none",border:"none",color:G.blue,cursor:"pointer",fontSize:13,padding:0,fontWeight:600,fontFamily:"inherit"}} onClick={onBack}>← Back to Members</button>
+        <div style={{display:"flex",gap:8}}>
+          <button style={{padding:"7px 12px",borderRadius:8,border:"none",background:"#25D366",color:"white",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}} onClick={()=>{
+            const lc=Object.entries(m.weeklyContributions).filter(([,c])=>c.paid).length;
+            const msg=`💰 *${m.name}* — Khobidi Savings%0A%0A` +
+              `${tier.icon} ${tier.label} (${score}/100)%0A` +
+              `Weeks paid: ${lc}/52%0A` +
+              `Total: ${fmt(totalContribs)}%0A` +
+              (totalLoanBal>0?`Loan balance: ${fmt(totalLoanBal)}%0A`:``) +
+              (totalPens>0?`Penalties: ${fmt(totalPens)}%0A`:``) +
+              `%0AGenerated: ${new Date().toLocaleString("en-GB")}`;
+            window.open(`https://wa.me/?text=${msg}`,"_blank");
+          }}>💬 Share Receipt</button>
+        </div>
+      </div>
 
       <div style={{background:G.surface,borderRadius:18,padding:24,marginBottom:18,boxShadow:G.shadow,border:`1px solid ${G.border}`,borderLeft:`5px solid ${tier.color}`}}>
         <div style={{display:"flex",gap:18,alignItems:"center",flexWrap:"wrap"}}>
@@ -1003,7 +1267,7 @@ function MemberDetail({member:m,upd,toast2,log,week,ask,closeConfirm,onBack}){
         <Card>
           <CardTitle>💵 Log Weekly Payment</CardTitle>
           <label style={{fontSize:10,fontWeight:700,color:G.textSoft,textTransform:"uppercase",letterSpacing:.6,display:"block",marginBottom:5}}>Week #</label>
-          <input type="number" min={1} max={52} value={wkInput} style={inputStyle} onChange={e=>setWkInput(+e.target.value)}/>
+          <input type="number" inputMode="numeric" min={1} max={52} value={wkInput} style={inputStyle} onChange={e=>setWkInput(+e.target.value)}/>
           <div style={{fontSize:10,color:G.textSoft,marginBottom:10}}>Due: {fds(SUNDAYS[wkInput-1]?.date)}</div>
           {m.weeklyContributions[wkInput]?.paid
             ?<div style={{background:G.primaryL,color:G.primary,padding:"8px 12px",borderRadius:8,fontSize:12,fontWeight:600}}>✓ Week {wkInput}: {fmt(m.weeklyContributions[wkInput].amount)}</div>
@@ -1037,7 +1301,7 @@ function MemberDetail({member:m,upd,toast2,log,week,ask,closeConfirm,onBack}){
                 {m.loans.map((l,i)=>l.active&&<option key={i} value={i}>Loan {i+1} — bal {fmt(loanBalance(l))}</option>)}
               </select>
               <div style={{display:"flex",gap:6}}>
-                <input type="number" placeholder="Repayment €" value={repayAmt} style={{...inputStyle,marginBottom:0,flex:1}} onChange={e=>setRepayAmt(e.target.value)}/>
+                <input type="number" inputMode="decimal" placeholder="Repayment €" value={repayAmt} style={{...inputStyle,marginBottom:0,flex:1}} onChange={e=>setRepayAmt(e.target.value)}/>
                 <button style={{padding:"8px 14px",borderRadius:8,border:"none",background:G.primary,color:"white",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}} onClick={doRepayLoan}>Log</button>
               </div>
             </div>
@@ -1078,10 +1342,11 @@ function MemberDetail({member:m,upd,toast2,log,week,ask,closeConfirm,onBack}){
 const inputStyle={width:"100%",padding:"9px 12px",border:`1.5px solid ${G.border}`,borderRadius:9,fontSize:13,boxSizing:"border-box",marginBottom:8,outline:"none",fontFamily:"inherit",color:G.text,background:G.bg};
 
 /* ═══════════════════════════════════ WEEKLY PAYMENTS */
-function WeeklyView({members,week,upd,toast2,log,ask,closeConfirm}){
+function WeeklyView({members,week,upd,toast2,log,ask,closeConfirm,snapshot,restoreSnap,setMembers,setAuditLog,admin}){
   const due=SUNDAYS[week-1]?.date;
   const paidCount=members.filter(m=>m.weeklyContributions[week]?.paid).length;
   const weekTotal=members.reduce((s,m)=>s+(m.weeklyContributions[week]?.paid?m.weeklyContributions[week].amount:0),0);
+  const [bulkSel,setBulkSel]=useState({});
 
   function doLog(mid,name){
     ask({
@@ -1089,13 +1354,36 @@ function WeeklyView({members,week,upd,toast2,log,ask,closeConfirm}){
       sub:`Log €60 from ${name} for Week ${week}? This action will be recorded in the audit log.`,
       confirmLabel:"Yes, log €60",
       onConfirm:()=>{
+        const snap=snapshot();
         upd(mid,m=>({...m,weeklyContributions:{...m.weeklyContributions,[week]:{amount:60,paid:true,date:new Date().toISOString()}}}));
         log("WEEKLY",`Wk${week}: €60`,mid);
-        toast2(`${name} — Week ${week} logged`);
+        toast2(`${name} — Week ${week} logged`,"success",()=>restoreSnap(snap));
         closeConfirm();
       }
     });
   }
+
+  /* Bulk mode: mark multiple selected members as paid in one click */
+  function doBulkLog(){
+    const ids=Object.keys(bulkSel).filter(id=>bulkSel[id]).map(Number);
+    if(ids.length===0){toast2("Select at least one member first","warn");return;}
+    const names=ids.map(id=>members.find(m=>m.id===id)?.name).join(", ");
+    ask({
+      msg:`Bulk Log Week ${week}`,
+      sub:`Log €60 for ${ids.length} member${ids.length>1?"s":""}: ${names.length>60?names.substring(0,60)+"…":names}. Total: €${ids.length*60}.`,
+      confirmLabel:`Log €${ids.length*60} total`,
+      onConfirm:()=>{
+        const snap=snapshot();
+        setMembers(ms=>ms.map(m=>ids.includes(m.id)?{...m,weeklyContributions:{...m.weeklyContributions,[week]:{amount:60,paid:true,date:new Date().toISOString()}}}:m));
+        const newLogs=ids.map(id=>mkLog(admin,"WEEKLY",`Wk${week}: €60 (bulk)`,id));
+        setAuditLog(l=>[...newLogs,...l]);
+        toast2(`✓ ${ids.length} payments logged (Week ${week})`,"success",()=>restoreSnap(snap));
+        setBulkSel({});
+        closeConfirm();
+      }
+    });
+  }
+
   function doPen(mid,name){
     ask({
       msg:"Apply Late Penalty?",
@@ -1103,13 +1391,17 @@ function WeeklyView({members,week,upd,toast2,log,ask,closeConfirm}){
       confirmLabel:"Apply Penalty",
       danger:true,
       onConfirm:()=>{
+        const snap=snapshot();
         upd(mid,m=>({...m,penalties:[...m.penalties,{amount:PENALTY_AMT,reason:`Late/missed week ${week}`,date:new Date().toISOString()}]}));
         log("PENALTY",`€${PENALTY_AMT} missed wk${week}`,mid);
-        toast2(`Penalty added to ${name}`,"warn");
+        toast2(`Penalty added to ${name}`,"warn",()=>restoreSnap(snap));
         closeConfirm();
       }
     });
   }
+
+  const unpaidIds=members.filter(m=>!m.weeklyContributions[week]?.paid).map(m=>m.id);
+  const selCount=Object.keys(bulkSel).filter(id=>bulkSel[id]).length;
 
   return(
     <div>
@@ -1122,17 +1414,30 @@ function WeeklyView({members,week,upd,toast2,log,ask,closeConfirm}){
         <StatCard icon="📅" label="Due Date" value={fds(due)} color={G.blue}/>
       </div>
 
+      {unpaidIds.length>0&&<Card style={{marginBottom:14,background:G.primaryL,borderLeft:`4px solid ${G.primary}`}}>
+        <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+          <div style={{fontSize:22}}>⚡</div>
+          <div style={{flex:1,minWidth:180}}>
+            <div style={{fontWeight:800,fontSize:13,color:G.text,marginBottom:2}}>Quick Bulk Mode</div>
+            <div style={{fontSize:11,color:G.textMid}}>{selCount===0?"Tick members below to bulk-log this week's payments in one click.":`${selCount} member${selCount>1?"s":""} selected · Total: €${selCount*60}`}</div>
+          </div>
+          <button style={{padding:"7px 12px",borderRadius:8,border:`1px solid ${G.primary}`,background:"white",color:G.primary,fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}} onClick={()=>{const all={};unpaidIds.forEach(id=>all[id]=true);setBulkSel(all);}}>Select All Unpaid</button>
+          {selCount>0&&<button style={{padding:"7px 12px",borderRadius:8,border:"none",background:G.primary,color:"white",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}} onClick={doBulkLog}>✓ Log {selCount} × €60</button>}
+          {selCount>0&&<button style={{padding:"7px 12px",borderRadius:8,border:`1px solid ${G.border}`,background:"white",color:G.textMid,fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:"inherit"}} onClick={()=>setBulkSel({})}>Clear</button>}
+        </div>
+      </Card>}
+
       <Table
-        cols={["Member","Tier","Status","Amount","Logged","Actions"]}
+        cols={["✓","Member","Status","Amount","Logged","Actions"]}
         rows={members.map(m=>{
           const c=m.weeklyContributions[week];
           const score=creditScore(m);const tier=getTier(score);
           return[
-            <div style={{fontWeight:700,color:G.text}}>{m.name}</div>,
-            <Pill label={`${tier.icon} ${score}`} color={tier.color} bg={tier.bg}/>,
+            !c?.paid?<input type="checkbox" checked={!!bulkSel[m.id]} onChange={e=>setBulkSel(p=>({...p,[m.id]:e.target.checked}))} style={{width:18,height:18,cursor:"pointer",accentColor:G.primary}}/>:<span style={{color:G.primary,fontSize:16}}>✓</span>,
+            <div><div style={{fontWeight:700,color:G.text}}>{m.name}</div><div style={{fontSize:10,color:G.textSoft}}>{tier.icon} {tier.label}</div></div>,
             c?.paid?<Pill label="✓ Paid" color={G.primary} bg={G.primaryL}/>:<Pill label="⏳ Pending" color={G.gold} bg="#FDF6E9"/>,
             <span style={{fontWeight:600}}>{c?.paid?fmt(c.amount):"—"}</span>,
-            <span style={{fontSize:11,color:G.textSoft}}>{c?.paid?fd(c.date):"—"}</span>,
+            <span style={{fontSize:11,color:G.textSoft}}>{c?.paid?fdr(c.date):"—"}</span>,
             !c?.paid
               ?<div style={{display:"flex",gap:5}}>
                 <button style={smallBtnPrim} onClick={()=>doLog(m.id,m.name)}>Log €60</button>
@@ -1219,7 +1524,7 @@ function LoansView({members,upd,toast2,log,ask,closeConfirm}){
                     <div style={{fontSize:11,color:G.textSoft,marginTop:3}}>Issued: {fd(l.issuedDate)} · Due: {fd(due)}</div>
                     {(l.repayments||[]).map((r,j)=><div key={j} style={{color:G.primary,fontSize:11,marginTop:3}}>↳ {fmt(r.amount)} on {fd(r.date)}</div>)}
                     {l.active&&<div style={{display:"flex",gap:7,marginTop:8}}>
-                      <input type="number" placeholder="Repayment amount" value={repayAmts[key]||""} style={{...inputStyle,marginBottom:0,flex:1}} onChange={e=>setRepayAmts(p=>({...p,[key]:e.target.value}))}/>
+                      <input type="number" inputMode="decimal" placeholder="Repayment amount" value={repayAmts[key]||""} style={{...inputStyle,marginBottom:0,flex:1}} onChange={e=>setRepayAmts(p=>({...p,[key]:e.target.value}))}/>
                       <button style={smallBtnPrim} onClick={()=>doRepay(m.id,i,m.name)}>Log Repayment</button>
                     </div>}
                   </div>
@@ -1849,7 +2154,7 @@ function AuditView({auditLog,members}){
                 <span style={{fontSize:13,color:G.text,fontWeight:600}}>{a.detail}</span>
                 {a.memberId&&<span style={{fontSize:11,color:G.textSoft}}>· {members.find(m=>m.id===a.memberId)?.name}</span>}
               </div>
-              <div style={{fontSize:11,color:G.textSoft}}>by {a.admin} · {fd(a.ts)} {new Date(a.ts).toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"})}</div>
+              <div style={{fontSize:11,color:G.textSoft}}>by {a.admin} · <span title={fd(a.ts)+" "+new Date(a.ts).toLocaleTimeString("en-GB")}>{fdr(a.ts)}</span></div>
             </div>
           </div>
         ))}
@@ -1868,16 +2173,75 @@ function MemberPortal({member:m,members,onClose}){
   const weeksPaid=Object.values(m.weeklyContributions).filter(c=>c.paid).length;
   const rank=[...members].map(mm=>({id:mm.id,s:creditScore(mm)})).sort((a,b)=>b.s-a.s).findIndex(mm=>mm.id===m.id)+1;
   const chartData=Array.from({length:12},(_,i)=>{const w=i+1;const c=m.weeklyContributions[w];return{name:`W${w}`,amount:c?.paid?c.amount:0};});
+  // Figure out what's owed vs caught up
+  const today=new Date();
+  let currentWk=1;for(let i=SUNDAYS.length-1;i>=0;i--){if(SUNDAYS[i].date<=today){currentWk=i+1;break;}}
+  const unpaidWeeks=[];for(let w=1;w<=currentWk;w++){if(!m.weeklyContributions[w]?.paid)unpaidWeeks.push(w);}
+  const owedAmt=unpaidWeeks.length*60+(loanBal>0?loanBal:0);
+  const allCaughtUp=unpaidWeeks.length===0&&loanBal===0;
+  // Next payment date
+  const nextSun=SUNDAYS[currentWk]||SUNDAYS[currentWk-1];
+
+  function downloadStatement(){
+    const wb=XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet([{
+      Member:m.name,Season:SEASON_START,"Generated":new Date().toLocaleString("en-GB"),
+      "Credit Score":score,"Credit Tier":tier.label,"Loan Rate":Math.round(tier.rate*100)+"%",
+      "Weeks Paid":weeksPaid,"Total Contributions":fmt(totalContribs),
+      "Active Loan Balance":fmt(loanBal),"Total Penalties":fmt(totalPens),
+      "Unpaid Weeks":unpaidWeeks.join(", ")||"None","Amount Owed":fmt(owedAmt)
+    }]),"Statement");
+    XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(SUNDAYS.map(s=>{
+      const c=m.weeklyContributions[s.week];
+      return{Week:s.week,"Due Date":fd(s.date),Status:c?.paid?"✓ Paid":"Unpaid",Amount:c?.paid?fmt(c.amount):"—",Logged:c?.paid?fd(c.date):"—"};
+    })),"Weekly History");
+    XLSX.writeFile(wb,`${m.name.replace(/\s/g,"_")}_Statement_${new Date().toISOString().split("T")[0]}.xlsx`);
+    haptic(40);
+  }
+  function shareReceipt(){
+    const last=Object.entries(m.weeklyContributions).filter(([,c])=>c.paid).sort((a,b)=>new Date(b[1].date)-new Date(a[1].date))[0];
+    const lastTxt=last?`Last payment: Week ${last[0]} — ${fmt(last[1].amount)} on ${fd(last[1].date)}`:"No payments yet";
+    const msg=`💰 *${m.name}'s Statement — Khobidi Savings*%0A%0A` +
+      `${tier.icon} ${tier.label} (Score: ${score}/100)%0A` +
+      `Weeks paid: ${weeksPaid}/52%0A` +
+      `Total contributed: ${fmt(totalContribs)}%0A` +
+      `Loan rate eligible: ${Math.round(tier.rate*100)}%25%0A` +
+      (loanBal>0?`Active loan balance: ${fmt(loanBal)}%0A`:``) +
+      (unpaidWeeks.length>0?`%0A⚠️ Owed: ${fmt(owedAmt)} (Weeks ${unpaidWeeks.join(", ")})`:`%0A✅ All caught up!`) +
+      `%0A%0A${lastTxt}`;
+    window.open(`https://wa.me/?text=${msg}`,"_blank");
+  }
+
   return(
     <div style={{position:"fixed",inset:0,background:G.bg,overflowY:"auto",zIndex:200,padding:24,fontFamily:"'DM Sans','Helvetica Neue',sans-serif"}}>
       <div style={{maxWidth:780,margin:"0 auto"}}>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:22}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:18,flexWrap:"wrap",gap:8}}>
           <div>
-            <h1 style={{color:G.text,margin:0,fontFamily:"'Georgia',serif",fontSize:26,letterSpacing:-.3}}>{m.name}'s Dashboard</h1>
+            <h1 style={{color:G.text,margin:0,fontFamily:"'Georgia',serif",fontSize:26,letterSpacing:-.3}}>{m.name}</h1>
             <p style={{color:G.textSoft,margin:"3px 0 0",fontSize:13}}>Read-only · Khobidi Savings Group {SEASON_START}</p>
           </div>
-          <button style={{background:G.text,color:"white",border:"none",borderRadius:10,padding:"9px 18px",cursor:"pointer",fontSize:12,fontWeight:600,fontFamily:"inherit"}} onClick={onClose}>✕ Close</button>
+          <div style={{display:"flex",gap:8}}>
+            <button style={{background:"#25D366",color:"white",border:"none",borderRadius:10,padding:"9px 14px",cursor:"pointer",fontSize:12,fontWeight:700,fontFamily:"inherit"}} onClick={shareReceipt}>💬 Share</button>
+            <button style={{background:G.bg,color:G.text,border:`1px solid ${G.border}`,borderRadius:10,padding:"9px 14px",cursor:"pointer",fontSize:12,fontWeight:700,fontFamily:"inherit"}} onClick={downloadStatement}>📥 Statement</button>
+            <button style={{background:G.text,color:"white",border:"none",borderRadius:10,padding:"9px 14px",cursor:"pointer",fontSize:12,fontWeight:600,fontFamily:"inherit"}} onClick={onClose}>✕</button>
+          </div>
         </div>
+
+        {/* WHAT YOU OWE / CAUGHT UP — loud banner */}
+        <Card style={{marginBottom:14,background:allCaughtUp?`linear-gradient(135deg,${G.primary} 0%,${G.primaryD} 100%)`:`linear-gradient(135deg,${G.red} 0%,#A02C2C 100%)`,border:"none",color:"white"}}>
+          <div style={{display:"flex",alignItems:"center",gap:16,flexWrap:"wrap"}}>
+            <div style={{fontSize:48}}>{allCaughtUp?"🎉":"⚠️"}</div>
+            <div style={{flex:1,minWidth:200}}>
+              <div style={{fontSize:11,opacity:.9,textTransform:"uppercase",letterSpacing:1.2,fontWeight:700}}>{allCaughtUp?"You're all caught up!":"You currently owe"}</div>
+              <div style={{fontSize:36,fontWeight:800,fontFamily:"'Georgia',serif",margin:"4px 0",letterSpacing:-.5}}>{allCaughtUp?"✓ €0":fmt(owedAmt)}</div>
+              <div style={{fontSize:13,opacity:.95,lineHeight:1.5}}>
+                {allCaughtUp
+                  ?<>Next payment of <strong>€60</strong> due <strong>{fds(nextSun?.date)}</strong></>
+                  :<>{unpaidWeeks.length>0&&<>Unpaid weeks: <strong>{unpaidWeeks.slice(0,5).join(", ")}{unpaidWeeks.length>5?` +${unpaidWeeks.length-5} more`:""}</strong>.<br/></>}{loanBal>0&&<>Active loan balance: <strong>{fmt(loanBal)}</strong>. </>}Please pay before next Sunday to avoid penalties.</>}
+              </div>
+            </div>
+          </div>
+        </Card>
 
         <Card style={{borderLeft:`5px solid ${tier.color}`,marginBottom:14}}>
           <div style={{display:"flex",gap:18,alignItems:"center",flexWrap:"wrap"}}>
